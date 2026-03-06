@@ -2,17 +2,11 @@
 
 import { useEffect, useState, useCallback } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { Series } from '@/types/series'
 
-type Series = {
-  id: string
-  name: string
-  niche: string
-  tone: string
-  length_seconds: number
-  created_at: string
+type Props = {
+  refreshTrigger: number
 }
-
-type Props = { refreshTrigger: number }
 
 export default function SeriesList({ refreshTrigger }: Props) {
   const [series, setSeries] = useState<Series[]>([])
@@ -22,7 +16,9 @@ export default function SeriesList({ refreshTrigger }: Props) {
     setLoading(true)
     const supabase = createClient()
     const { data, error } = await supabase
-      .from('series').select('*').order('created_at', { ascending: false })
+      .from('series')
+      .select('*')
+      .order('created_at', { ascending: false })
     if (!error && data) setSeries(data)
     setLoading(false)
   }, [])
