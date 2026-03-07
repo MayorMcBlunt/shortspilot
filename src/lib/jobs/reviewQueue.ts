@@ -1,4 +1,4 @@
-﻿import { createClient } from '@/lib/supabase/server'
+import { createClient } from '@/lib/supabase/server'
 import { ReviewStatus, ReviewEdits } from '@/types/agents'
 import { ContentQueueRow, ContentQueueItemFull } from '@/types/content'
 
@@ -178,8 +178,11 @@ export async function markVideoRendering(id: string, userId: string): Promise<Ac
   const result = await updateQueueItem(
     id,
     userId,
-    { status: 'video_rendering' as ReviewStatus },
-    { allowedFrom: ['approved'], transitionName: 'request_video_render' }
+    {
+      status: 'video_rendering' as ReviewStatus,
+      video_url: null,
+    },
+    { allowedFrom: ['approved', 'video_ready'], transitionName: 'request_video_render' }
   )
 
   if (!result.success) return result
@@ -255,7 +258,7 @@ export async function getQueueItems(
   let query = supabase
     .from('content_queue')
     .select(
-      'id, job_id, user_id, series_id, platform, status, title, hook, review_notes, review_edits, video_url, approved_at, rejected_at, rejection_reason, generated_at, created_at'
+      'id, job_id, user_id, series_id, platform, status, title, hook, review_notes, review_edits, video_url, published_at, published_url, approved_at, rejected_at, rejection_reason, generated_at, created_at'
     )
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
@@ -304,3 +307,5 @@ async function logQueueEvent(
     console.error(`[reviewQueue] audit log failed for "${event}" on ${queueItemId}:`, error.message)
   }
 }
+
+

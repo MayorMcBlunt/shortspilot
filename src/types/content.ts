@@ -1,4 +1,4 @@
-import { ReviewStatus, ReviewEdits, ContentPackage } from '@/types/agents'
+﻿import { ReviewStatus, ReviewEdits, ContentPackage } from '@/types/agents'
 import { Platform } from '@/types/platform'
 
 export type { Platform }
@@ -6,7 +6,7 @@ export type { ReviewStatus }
 export type { ReviewEdits }
 export type { ContentPackage }
 
-// Lightweight row for listing the queue — no JSONB blobs needed
+// Lightweight row for listing the queue - no JSONB blobs needed
 export type ContentQueueRow = {
   id: string
   job_id: string
@@ -17,8 +17,10 @@ export type ContentQueueRow = {
   title: string
   hook: string
   review_notes: string | null
-  review_edits: ReviewEdits | null   // human overrides — never touches package
-  video_url: string | null           // rendered MP4 URL — set after video_ready
+  review_edits: ReviewEdits | null
+  video_url: string | null
+  published_at: string | null
+  published_url: string | null
   approved_at: string | null
   rejected_at: string | null
   rejection_reason: string | null

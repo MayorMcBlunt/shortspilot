@@ -1,4 +1,4 @@
-﻿import { createClient } from '@/lib/supabase/server'
+import { createClient } from '@/lib/supabase/server'
 import { generateVoiceover } from '@/lib/services/openaiTts'
 import { fetchSceneClips, PexelsVideo } from '@/lib/services/pexels'
 import { dispatchRender, getStubVideoUrl } from '@/lib/services/creatomate'
@@ -71,7 +71,11 @@ export async function renderVideoForQueueItem(
   }
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
-  const webhookUrl = `${appUrl}/api/webhooks?provider=creatomate`
+  const webhookSecret = process.env.CREATOMATE_WEBHOOK_SECRET?.trim()
+  const webhookBaseUrl = `${appUrl}/api/webhooks?provider=creatomate`
+  const webhookUrl = webhookSecret
+    ? `${webhookBaseUrl}&token=${encodeURIComponent(webhookSecret)}`
+    : webhookBaseUrl
   console.log(`[renderVideo] Dispatching render for job ${jobId}`)
 
   let renderResult: Awaited<ReturnType<typeof dispatchRender>>

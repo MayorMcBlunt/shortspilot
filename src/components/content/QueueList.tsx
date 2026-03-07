@@ -156,7 +156,7 @@ export default function QueueList({ initialItems }: { initialItems: ContentQueue
                 : 'border-red-200 text-red-600 hover:bg-red-50'
             }`}
           >
-            {selectMode ? 'âœ• Cancel' : 'ðŸ—‘ Manage'}
+            {selectMode ? 'Cancel' : 'Manage'}
           </button>
         )}
       </div>
@@ -204,7 +204,7 @@ export default function QueueList({ initialItems }: { initialItems: ContentQueue
                 disabled={deleting}
                 className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-medium transition disabled:opacity-50"
               >
-                ðŸ—‘ Delete Selected ({selected.size})
+                Delete Selected ({selected.size})
               </button>
             )
           )}
@@ -286,7 +286,7 @@ export default function QueueList({ initialItems }: { initialItems: ContentQueue
               </div>
               {item.review_notes && (
                 <p className="mt-2 text-xs text-orange-600 bg-orange-50 rounded px-2 py-1 line-clamp-1">
-                  ðŸ“ {item.review_notes}
+                  {item.review_notes}
                 </p>
               )}
             </Link>
@@ -296,5 +296,9 @@ export default function QueueList({ initialItems }: { initialItems: ContentQueue
     </div>
   )
 }
+
+
+
+
 
 
