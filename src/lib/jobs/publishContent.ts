@@ -1,18 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
-import { decryptSecret, encryptSecret } from '@/lib/security/tokens'
+import { getActiveYouTubeAccessToken } from '@/lib/services/youtubeAccount'
 import { publishToYouTube } from '@/lib/services/youtube'
-import { refreshYoutubeToken } from '@/lib/services/youtubeOAuth'
 import type { ContentQueueItemFull } from '@/types/content'
-
-type ConnectedAccountRow = {
-  id: string
-  user_id: string
-  platform: 'youtube'
-  access_token_encrypted: string
-  refresh_token_encrypted: string | null
-  token_expires_at: string | null
-  is_active: boolean
-}
 
 type InFlightPublishJob = {
   id: string
@@ -23,13 +12,7 @@ type PublishResult =
   | { success: true; publishJobId: string; externalPostUrl: string }
   | { success: false; error: string; statusCode?: number; publishJobId?: string }
 
-const IN_FLIGHT_STATUSES = ['queued', 'validating', 'refreshing_token', 'uploading', 'processing'] as const
-
-function shouldRefresh(expiresAt: string | null): boolean {
-  if (!expiresAt) return false
-  const ms = new Date(expiresAt).getTime() - Date.now()
-  return ms < 5 * 60 * 1000
-}
+const IN_FLIGHT_STATUSES = ['queued', 'validating', 'uploading', 'processing'] as const
 
 async function updateJobStatus(
   jobId: string,
@@ -76,7 +59,8 @@ async function claimQueueForPublish(params: {
   if (error) {
     const code = (error as { code?: string }).code
     if (code === '42703') {
-      // Older schema without last_publish_job_id - skip hard claim.
+      // Column doesn't exist in this schema version — skip hard claim.
+      // TODO: remove this fallback once all environments have migration 005 applied.
       return { ok: true }
     }
     return { ok: false, error: error.message }
@@ -107,6 +91,7 @@ export async function executeYouTubePublish(params: {
   title?: string
   description?: string
 }): Promise<PublishResult> {
+  // ── Idempotency: reject if a publish is already in flight ─────────────────
   const existingInFlight = await findInFlightJob(params.item.id, params.userId)
   if (existingInFlight) {
     return {
@@ -117,34 +102,42 @@ export async function executeYouTubePublish(params: {
     }
   }
 
+  // ── Resolve access token via canonical youtubeAccount helper ──────────────
+  // getActiveYouTubeAccessToken handles: load account → decrypt → refresh if expiring → re-encrypt.
+  // No token handling logic lives here anymore.
+  const tokenResult = await getActiveYouTubeAccessToken(params.userId)
+
+  if (!tokenResult.success) {
+    return { success: false, error: tokenResult.error }
+  }
+
+  const accessToken = tokenResult.accessToken
+
+  // ── We still need the account id for publish_jobs row ────────────────────
   const supabase = await createClient()
 
-  const q = supabase
+  const accountQuery = supabase
     .from('connected_accounts')
-    .select('id, user_id, platform, access_token_encrypted, refresh_token_encrypted, token_expires_at, is_active')
+    .select('id')
     .eq('user_id', params.userId)
     .eq('platform', 'youtube')
     .eq('is_active', true)
 
-  const accountQuery = params.connectedAccountId
-    ? q.eq('id', params.connectedAccountId).maybeSingle()
-    : q.order('connected_at', { ascending: false }).limit(1).maybeSingle()
+  const { data: account, error: accountError } = params.connectedAccountId
+    ? await accountQuery.eq('id', params.connectedAccountId).maybeSingle()
+    : await accountQuery.order('connected_at', { ascending: false }).limit(1).maybeSingle()
 
-  const { data: account, error: accountError } = await accountQuery
-
-  if (accountError) {
-    return { success: false, error: accountError.message }
+  if (accountError || !account) {
+    return { success: false, error: accountError?.message ?? 'No active YouTube account connected' }
   }
 
-  if (!account) {
-    return { success: false, error: 'No active YouTube account connected' }
-  }
-
+  // ── Build title and description ───────────────────────────────────────────
   const finalTitle = (params.title ?? params.item.review_edits?.title ?? params.item.title).trim()
   const caption = params.item.review_edits?.primaryCaption ?? params.item.package.caption.primaryCaption
   const hashtags = params.item.review_edits?.hashtags ?? params.item.package.caption.hashtags
   const finalDescription = (params.description ?? `${caption}\n\n${hashtags.join(' ')}`).trim()
 
+  // ── Create publish_jobs row ───────────────────────────────────────────────
   const { data: job, error: createJobError } = await supabase
     .from('publish_jobs')
     .insert({
@@ -168,6 +161,7 @@ export async function executeYouTubePublish(params: {
     return { success: false, error: createJobError?.message ?? 'Failed to create publish job' }
   }
 
+  // ── Claim the queue item against concurrent publishes ─────────────────────
   const claim = await claimQueueForPublish({
     queueItemId: params.item.id,
     userId: params.userId,
@@ -179,7 +173,6 @@ export async function executeYouTubePublish(params: {
       error_message: claim.error,
       completed_at: new Date().toISOString(),
     })
-
     return {
       success: false,
       statusCode: 409,
@@ -188,42 +181,16 @@ export async function executeYouTubePublish(params: {
     }
   }
 
+  // ── Upload to YouTube ─────────────────────────────────────────────────────
   let uploadResult: Awaited<ReturnType<typeof publishToYouTube>> | null = null
 
   try {
-    await updateJobStatus(job.id, 'validating')
-
-    let accessToken = decryptSecret((account as ConnectedAccountRow).access_token_encrypted)
-
-    if (shouldRefresh((account as ConnectedAccountRow).token_expires_at)) {
-      if (!(account as ConnectedAccountRow).refresh_token_encrypted) {
-        throw new Error('YouTube token expired and no refresh token is available. Reconnect account.')
-      }
-
-      await updateJobStatus(job.id, 'refreshing_token')
-      const refreshToken = decryptSecret((account as ConnectedAccountRow).refresh_token_encrypted!)
-      const refreshed = await refreshYoutubeToken(refreshToken)
-      accessToken = refreshed.access_token
-
-      const expiresAt = new Date(Date.now() + refreshed.expires_in * 1000).toISOString()
-      const updates: Record<string, unknown> = {
-        access_token_encrypted: encryptSecret(refreshed.access_token),
-        token_expires_at: expiresAt,
-        last_refreshed_at: new Date().toISOString(),
-      }
-
-      if (refreshed.refresh_token) {
-        updates.refresh_token_encrypted = encryptSecret(refreshed.refresh_token)
-      }
-
-      await supabase.from('connected_accounts').update(updates).eq('id', account.id)
-    }
-
     await updateJobStatus(job.id, 'uploading')
 
     uploadResult = await publishToYouTube(accessToken, params.item.video_url!, finalTitle, finalDescription)
     const completedAt = new Date().toISOString()
 
+    // ── Finalize local state ──────────────────────────────────────────────
     const { data: updatedQueueItem, error: queueUpdateError } = await supabase
       .from('content_queue')
       .update({
@@ -255,7 +222,8 @@ export async function executeYouTubePublish(params: {
         success: false,
         statusCode: 409,
         publishJobId: job.id,
-        error: 'Uploaded to YouTube, but ShortsPilot could not finalize local publish state. Do not retry until reconciled.',
+        error:
+          'Uploaded to YouTube, but ShortsPilot could not finalize local publish state. Do not retry until reconciled.',
       }
     }
 
@@ -283,6 +251,7 @@ export async function executeYouTubePublish(params: {
     const message = error instanceof Error ? error.message : 'Publishing failed'
 
     if (uploadResult) {
+      // Upload succeeded but local finalization failed.
       await updateJobStatus(job.id, 'completed', {
         external_post_id: uploadResult.videoId,
         external_post_url: uploadResult.videoUrl,
@@ -295,10 +264,12 @@ export async function executeYouTubePublish(params: {
         success: false,
         statusCode: 409,
         publishJobId: job.id,
-        error: 'Uploaded to YouTube, but ShortsPilot could not finish local finalization. Do not retry until reconciled.',
+        error:
+          'Uploaded to YouTube, but ShortsPilot could not finish local finalization. Do not retry until reconciled.',
       }
     }
 
+    // Upload never started — safe to fail and release.
     await updateJobStatus(job.id, 'failed', {
       error_message: message,
       completed_at: new Date().toISOString(),

@@ -30,8 +30,13 @@ export type ScriptInput = {
 
 export type ScriptOutput = {
   hook: string
-  body: string
-  cta: string
+  // Structured fact/point segments — replaces the old monolithic 'body' string.
+  // Each segment is a single punchy sentence (5–12 words) optimized for B-roll matching.
+  // The pipeline assembles these into fullScript for TTS.
+  segments: string[]
+  ending: string
+  // fullScript = hook + segments joined + ending — used by TTS and renderVideo.
+  // Never edit this directly; it is derived from the structured fields above.
   fullScript: string
   estimatedDurationSeconds: number
   wordCount: number

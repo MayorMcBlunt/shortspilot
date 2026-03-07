@@ -6,6 +6,10 @@ import type { CreatomateWebhookPayload } from '@/lib/services/creatomate'
 // POST /api/webhooks?provider=creatomate
 // Receives render completion events from Creatomate.
 // Updates video_jobs row, then content_queue row.
+//
+// SECURITY: CREATOMATE_WEBHOOK_SECRET must be set in env.
+// If it is not set, all webhook requests are rejected with 503.
+// Set this value in Creatomate dashboard: Webhooks → Secret Token.
 
 function getAdminClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!
@@ -18,15 +22,30 @@ function getAdminClient() {
   return createClient(url, key)
 }
 
-function verifyCreatomateWebhook(request: NextRequest): boolean {
+/**
+ * Verifies the Creatomate webhook request.
+ *
+ * Returns:
+ *   'ok'              — secret matches (token param or x-webhook-secret header)
+ *   'missing_secret'  — CREATOMATE_WEBHOOK_SECRET env var is not configured
+ *   'invalid'         — secret is configured but the request does not match
+ */
+function verifyCreatomateWebhook(request: NextRequest): 'ok' | 'missing_secret' | 'invalid' {
   const expectedSecret = process.env.CREATOMATE_WEBHOOK_SECRET?.trim()
-  if (!expectedSecret) return true
+
+  if (!expectedSecret) {
+    return 'missing_secret'
+  }
 
   const url = new URL(request.url)
   const token = url.searchParams.get('token')?.trim()
   const headerSecret = request.headers.get('x-webhook-secret')?.trim()
 
-  return token === expectedSecret || headerSecret === expectedSecret
+  if (token === expectedSecret || headerSecret === expectedSecret) {
+    return 'ok'
+  }
+
+  return 'invalid'
 }
 
 export async function POST(request: NextRequest) {
@@ -47,9 +66,27 @@ export async function POST(request: NextRequest) {
 }
 
 async function handleCreatomateWebhook(request: NextRequest): Promise<NextResponse> {
-  if (!verifyCreatomateWebhook(request)) {
+  const verifyResult = verifyCreatomateWebhook(request)
+
+  if (verifyResult === 'missing_secret') {
+    console.error(
+      '[webhooks/creatomate] CREATOMATE_WEBHOOK_SECRET is not configured. ' +
+      'All webhook requests are rejected until this env var is set. ' +
+      'Set it in .env.local and in your Creatomate dashboard webhook settings.'
+    )
+    // Return 503 so Creatomate will retry once the secret is configured.
+    return NextResponse.json(
+      { error: 'Webhook endpoint is not configured (missing server secret). Contact administrator.' },
+      { status: 503 }
+    )
+  }
+
+  if (verifyResult === 'invalid') {
+    console.warn('[webhooks/creatomate] Rejected request with invalid webhook secret')
     return NextResponse.json({ error: 'Unauthorized webhook' }, { status: 401 })
   }
+
+  // verifyResult === 'ok' — proceed
 
   let payload: CreatomateWebhookPayload
   try {
@@ -135,6 +172,7 @@ async function handleCreatomateWebhook(request: NextRequest): Promise<NextRespon
     return NextResponse.json({ received: true })
   }
 
+  // status === 'failed'
   const errMsg = error_message ?? 'Unknown render error'
 
   const { data: failedJob, error: failedUpdateError } = await supabase

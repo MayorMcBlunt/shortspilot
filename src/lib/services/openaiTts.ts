@@ -99,6 +99,9 @@ export async function generateVoiceover(script: string, jobId: string): Promise<
 }
 
 function estimateDuration(script: string): number {
+  // OpenAI TTS 'alloy' voice speaks at ~2.8 words/second for conversational content.
+  // Must match TTS_WORDS_PER_SECOND in src/lib/ai/prompts/script.ts.
+  const TTS_WORDS_PER_SECOND = 2.8
   const wordCount = script.trim().split(/\s+/).length
-  return Math.ceil(wordCount / 2.5)
+  return Math.ceil(wordCount / TTS_WORDS_PER_SECOND)
 }

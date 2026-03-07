@@ -1,5 +1,5 @@
-import Link from 'next/link'
 import { redirect } from 'next/navigation'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { getQueueItems } from '@/lib/jobs/reviewQueue'
 import StatusBadge from '@/components/ui/StatusBadge'
@@ -79,7 +79,7 @@ export default async function PublishPage({
       <div>
         <h1 className="text-2xl font-bold text-gray-900 mb-1">Publish</h1>
         <p className="text-sm text-gray-500">
-          Publish is manual. Connect YouTube, then publish only items marked ready.
+          Publishing is manual. Connect YouTube, review the video preview, then publish items marked ready.
         </p>
       </div>
 
@@ -95,92 +95,100 @@ export default async function PublishPage({
         </div>
       )}
 
+      {/*
+        PublishManager handles:
+          - Connected accounts panel
+          - "Ready to Publish" list with inline video previews + publish buttons
+        Items are not listed again below — avoids duplication.
+      */}
       <PublishManager readyItems={readyItems} accounts={accounts} recentJobs={recentJobs} />
 
+      {/* ── Approved — waiting for video generation / publish prep ── */}
       <section className="space-y-3">
-        <h2 className="text-lg font-semibold text-gray-800">Ready To Publish ({readyItems.length})</h2>
-        {readyItems.length === 0 && (
-          <div className="bg-white rounded-2xl shadow p-6 text-sm text-gray-500">
-            No items are marked ready to publish yet.
-          </div>
-        )}
-        {readyItems.map((item) => (
-          <Link
-            key={item.id}
-            href={`/content/${item.id}`}
-            className="block bg-white rounded-2xl shadow px-6 py-4 hover:shadow-md transition"
-          >
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <StatusBadge status={item.status} />
-                  <span className="text-xs text-gray-400 uppercase">{item.platform}</span>
-                </div>
-                <p className="font-semibold text-gray-900">{item.review_edits?.title ?? item.title}</p>
-                <p className="text-sm text-gray-500">{item.review_edits?.hook ?? item.hook}</p>
-              </div>
-              <span className="text-xs text-gray-400 mt-1">{new Date(item.created_at).toLocaleDateString()}</span>
-            </div>
-          </Link>
-        ))}
-      </section>
-
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold text-gray-800">Approved ({approvedItems.length})</h2>
-        {approvedItems.length === 0 && (
+        <h2 className="text-lg font-semibold text-gray-800">
+          Approved
+          <span className="ml-2 text-sm font-normal text-gray-400">({approvedItems.length})</span>
+        </h2>
+        {approvedItems.length === 0 ? (
           <div className="bg-white rounded-2xl shadow p-6 text-sm text-gray-500">
             No approved items waiting for publish prep.
           </div>
-        )}
-        {approvedItems.map((item) => (
-          <Link
-            key={item.id}
-            href={`/content/${item.id}`}
-            className="block bg-white rounded-2xl shadow px-6 py-4 hover:shadow-md transition"
-          >
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <StatusBadge status={item.status} />
-                  <span className="text-xs text-gray-400 uppercase">{item.platform}</span>
+        ) : (
+          approvedItems.map((item) => (
+            <Link
+              key={item.id}
+              href={`/content/${item.id}`}
+              className="block bg-white rounded-2xl shadow px-6 py-4 hover:shadow-md transition group"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <StatusBadge status={item.status} />
+                    <span className="text-xs text-gray-400 uppercase">{item.platform}</span>
+                  </div>
+                  <p className="font-semibold text-gray-900 group-hover:text-indigo-600 transition">
+                    {item.review_edits?.title ?? item.title}
+                  </p>
+                  <p className="text-sm text-gray-500 mt-0.5">
+                    Generate a video then mark Ready to Publish from the review editor.
+                  </p>
                 </div>
-                <p className="font-semibold text-gray-900">{item.review_edits?.title ?? item.title}</p>
-                <p className="text-sm text-gray-500">Mark this item Ready to Publish from the review editor.</p>
+                <span className="text-xs text-gray-400 mt-1 shrink-0">
+                  {new Date(item.created_at).toLocaleDateString()}
+                </span>
               </div>
-              <span className="text-xs text-gray-400 mt-1">{new Date(item.created_at).toLocaleDateString()}</span>
-            </div>
-          </Link>
-        ))}
+            </Link>
+          ))
+        )}
       </section>
 
+      {/* ── Published history ── */}
       <section className="space-y-3">
-        <h2 className="text-lg font-semibold text-gray-800">Published ({publishedItems.length})</h2>
-        {publishedItems.length === 0 && (
+        <h2 className="text-lg font-semibold text-gray-800">
+          Published
+          <span className="ml-2 text-sm font-normal text-gray-400">({publishedItems.length})</span>
+        </h2>
+        {publishedItems.length === 0 ? (
           <div className="bg-white rounded-2xl shadow p-6 text-sm text-gray-500">
             No items have been published yet.
           </div>
-        )}
-        {publishedItems.map((item) => (
-          <div key={item.id} className="bg-white rounded-2xl shadow px-6 py-4">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <div className="flex items-center gap-2 mb-1">
-                  <StatusBadge status={item.status} />
-                  <span className="text-xs text-gray-400 uppercase">{item.platform}</span>
+        ) : (
+          publishedItems.map((item) => (
+            <div key={item.id} className="bg-white rounded-2xl shadow px-6 py-4">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <StatusBadge status={item.status} />
+                    <span className="text-xs text-gray-400 uppercase">{item.platform}</span>
+                  </div>
+                  <p className="font-semibold text-gray-900">
+                    {item.review_edits?.title ?? item.title}
+                  </p>
+                  {item.published_url ? (
+                    <a
+                      href={item.published_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-sm text-indigo-600 underline"
+                    >
+                      Open published post ↗
+                    </a>
+                  ) : (
+                    <p className="text-sm text-gray-400">Published URL not recorded.</p>
+                  )}
+                  {item.published_at && (
+                    <p className="text-xs text-gray-400 mt-1">
+                      Published {new Date(item.published_at).toLocaleDateString()}
+                    </p>
+                  )}
                 </div>
-                <p className="font-semibold text-gray-900">{item.review_edits?.title ?? item.title}</p>
-                {item.published_url ? (
-                  <a href={item.published_url} target="_blank" rel="noreferrer" className="text-sm text-indigo-600 underline">
-                    Open published post
-                  </a>
-                ) : (
-                  <p className="text-sm text-gray-500">Published URL not recorded.</p>
-                )}
+                <span className="text-xs text-gray-400 mt-1 shrink-0">
+                  {new Date(item.created_at).toLocaleDateString()}
+                </span>
               </div>
-              <span className="text-xs text-gray-400 mt-1">{new Date(item.created_at).toLocaleDateString()}</span>
             </div>
-          </div>
-        ))}
+          ))
+        )}
       </section>
     </div>
   )

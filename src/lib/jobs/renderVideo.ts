@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { generateVoiceover } from '@/lib/services/openaiTts'
 import { fetchSceneClips, PexelsVideo } from '@/lib/services/pexels'
-import { dispatchRender, getStubVideoUrl } from '@/lib/services/creatomate'
+import { dispatchRender, validateTimeline, getStubVideoUrl } from '@/lib/services/creatomate'
 import { RenderJobResult } from '@/types/video'
 import { ContentQueueItemFull } from '@/types/content'
 
@@ -54,11 +54,20 @@ export async function renderVideoForQueueItem(
     }
   }
 
+  // Compute per-scene clip durations from segment word counts.
+  // Passed to Pexels so it prefers footage long enough to cover each segment.
+  const TTS_WORDS_PER_SECOND = 2.8
   const assetGuidances = pkg.media.scenes.map((s) => s.assetGuidance)
-  const sceneContexts = pkg.media.scenes.map((scene) => ({
-    sceneText: scene.scriptSegment,
-    theme: pkg.strategy.theme,
-  }))
+  const sceneContexts = pkg.media.scenes.map((scene) => {
+    const words = scene.scriptSegment.trim().split(/\s+/).length
+    const clipSeconds = Math.ceil(words / TTS_WORDS_PER_SECOND) + 1 // +1s safety margin
+    return {
+      sceneText: scene.scriptSegment,
+      theme: pkg.strategy.theme,
+      minDurationSeconds: clipSeconds,
+      maxDurationSeconds: clipSeconds + 8, // allow up to 8s of extra footage
+    }
+  })
   console.log(`[renderVideo] Fetching ${assetGuidances.length} Pexels clips`)
 
   let sceneClips: (PexelsVideo | null)[]
@@ -76,6 +85,23 @@ export async function renderVideoForQueueItem(
   const webhookUrl = webhookSecret
     ? `${webhookBaseUrl}&token=${encodeURIComponent(webhookSecret)}`
     : webhookBaseUrl
+  // ── Pre-flight timeline check ────────────────────────────────────────────
+  // Log any integrity issues before sending to Creatomate.
+  // Critical issues (wrong scene count) are also caught inside dispatchRender;
+  // we log them here too so they appear in the render pipeline trace.
+  const timelineProblems = validateTimeline({
+    sceneClips,
+    sceneTexts: pkg.media.scenes.map((s) => s.scriptSegment),
+    durationSeconds: ttsResult.durationEstimateSeconds,
+  })
+  if (timelineProblems.length > 0) {
+    for (const p of timelineProblems) {
+      console.warn(`[renderVideo] timeline pre-flight: ${p}`)
+    }
+  } else {
+    console.log(`[renderVideo] timeline pre-flight: OK (${sceneClips.length} scenes, ${ttsResult.durationEstimateSeconds}s)`)
+  }
+
   console.log(`[renderVideo] Dispatching render for job ${jobId}`)
 
   let renderResult: Awaited<ReturnType<typeof dispatchRender>>

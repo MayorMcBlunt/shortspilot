@@ -3,11 +3,16 @@ import { createClient } from '@/lib/supabase/server'
 import { getActiveYouTubeAccessToken } from '@/lib/services/youtubeAccount'
 import { fetchYouTubeVideoStats, type YouTubeVideoStats } from '@/lib/services/youtube'
 import type { ReviewStatus } from '@/types/agents'
+import type { PublishJobStatus } from '@/types/publish'
+
+// Revalidate every 5 minutes — avoids hammering the YouTube API on every load
+// while keeping analytics reasonably fresh.
+export const revalidate = 300
 
 type StatusCounts = Record<ReviewStatus, number>
 
 type PublishJobRow = {
-  status: string
+  status: PublishJobStatus
   created_at: string
   external_post_id?: string | null
 }
@@ -23,8 +28,16 @@ const ZERO_COUNTS: StatusCounts = {
   published: 0,
 }
 
+// Statuses that represent an active in-flight publish attempt
+const PUBLISH_IN_FLIGHT_STATUSES: PublishJobStatus[] = [
+  'queued',
+  'validating',
+  'uploading',
+  'processing',
+]
+
 function pct(part: number, total: number): string {
-  if (total <= 0) return '0%'
+  if (total <= 0) return '—'
   return `${Math.round((part / total) * 100)}%`
 }
 
@@ -70,46 +83,64 @@ export default async function AnalyticsPage() {
   const videoJobs = videoRes.data ?? []
   const videoCompleted = videoJobs.filter((j) => j.status === 'completed').length
   const videoFailed = videoJobs.filter((j) => j.status === 'failed').length
-  const videoProcessing = videoJobs.filter((j) => j.status === 'processing' || j.status === 'queued').length
+  const videoProcessing = videoJobs.filter(
+    (j) => j.status === 'processing' || j.status === 'queued'
+  ).length
 
   const publishJobs = (publishRes.error ? [] : publishRes.data ?? []) as PublishJobRow[]
   const publishCompleted = publishJobs.filter((j) => j.status === 'completed').length
   const publishFailed = publishJobs.filter((j) => j.status === 'failed').length
-  const publishInFlight = publishJobs.filter((j) => ['queued', 'validating', 'refreshing_token', 'uploading', 'processing'].includes(j.status)).length
+  const publishCanceled = publishJobs.filter((j) => j.status === 'canceled').length
+  const publishInFlight = publishJobs.filter((j) =>
+    PUBLISH_IN_FLIGHT_STATUSES.includes(j.status)
+  ).length
+  // Exclude canceled jobs from the success rate denominator — they are not real attempts
+  const publishAttempted = publishCompleted + publishFailed
 
   const dbWarnings: string[] = []
   if (queueRes.error) dbWarnings.push(`Queue analytics unavailable: ${queueRes.error.message}`)
   if (videoRes.error) dbWarnings.push(`Video analytics unavailable: ${videoRes.error.message}`)
   if (publishRes.error) {
-    const missingPublishTables = (publishRes.error as { code?: string }).code === '42P01'
+    const isMissingTable = (publishRes.error as { code?: string }).code === '42P01'
     dbWarnings.push(
-      missingPublishTables
-        ? 'Publish analytics unavailable until publishing migration is applied.'
+      isMissingTable
+        ? 'Publish analytics unavailable — run migration 005 to enable this section.'
         : `Publish analytics unavailable: ${publishRes.error.message}`
     )
   }
 
+  // ── YouTube live stats ────────────────────────────────────────────────────
   let youtubeStats: YouTubeVideoStats[] = []
   let youtubeStatsWarning: string | null = null
 
   const completedVideoIds = publishJobs
-    .filter((job) => job.status === 'completed' && typeof job.external_post_id === 'string' && job.external_post_id.trim() !== '')
+    .filter(
+      (job) =>
+        job.status === 'completed' &&
+        typeof job.external_post_id === 'string' &&
+        job.external_post_id.trim() !== ''
+    )
     .map((job) => job.external_post_id!.trim())
 
   if (completedVideoIds.length === 0) {
-    youtubeStatsWarning = 'No completed YouTube publish jobs with video IDs yet.'
+    youtubeStatsWarning =
+      totalPublished > 0
+        ? 'No YouTube video IDs recorded yet. Stats will appear after the first successful publish.'
+        : 'No videos have been published through ShortsPilot yet.'
   } else {
     const access = await getActiveYouTubeAccessToken(user.id)
     if (!access.success) {
-      youtubeStatsWarning = `YouTube analytics unavailable: ${access.error}`
+      youtubeStatsWarning = `YouTube stats unavailable — ${access.error}`
     } else {
       try {
         youtubeStats = await fetchYouTubeVideoStats(access.accessToken, completedVideoIds)
         if (youtubeStats.length === 0) {
-          youtubeStatsWarning = 'YouTube analytics returned no video statistics yet.'
+          youtubeStatsWarning =
+            'YouTube returned no statistics for published videos. They may still be processing.'
         }
       } catch (e) {
-        youtubeStatsWarning = e instanceof Error ? e.message : 'Failed to load YouTube analytics.'
+        youtubeStatsWarning =
+          e instanceof Error ? e.message : 'Failed to load YouTube analytics.'
       }
     }
   }
@@ -123,7 +154,9 @@ export default async function AnalyticsPage() {
       <div>
         <h1 className="text-2xl font-bold text-gray-900 mb-1">Analytics</h1>
         <p className="text-sm text-gray-500">
-          Pipeline analytics is based on ShortsPilot workflow data. YouTube section uses live API stats for videos published through this app.
+          Pipeline data reflects ShortsPilot workflow. YouTube section shows live stats from the
+          connected account for videos published through this app.
+          <span className="ml-1 text-gray-400">(Refreshed every 5 min)</span>
         </p>
       </div>
 
@@ -135,49 +168,91 @@ export default async function AnalyticsPage() {
         </div>
       )}
 
+      {/* ── Top-level metrics ── */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <MetricCard label="Series" value={seriesCount} />
         <MetricCard label="Queue Items" value={totalQueue} />
-        <MetricCard label="Published" value={totalPublished} subtitle={pct(totalPublished, totalQueue)} />
-        <MetricCard label="Ready To Publish" value={totalReady} subtitle={`${totalVideoReady} with video ready`} />
+        <MetricCard
+          label="Published"
+          value={totalPublished}
+          subtitle={totalQueue > 0 ? `${pct(totalPublished, totalQueue)} of queue` : undefined}
+        />
+        <MetricCard
+          label="Ready To Publish"
+          value={totalReady}
+          subtitle={totalVideoReady > 0 ? `${totalVideoReady} with video ready` : undefined}
+        />
       </div>
 
+      {/* ── Review queue breakdown + video render stats ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-white rounded-2xl shadow p-5">
           <h2 className="text-sm font-semibold text-gray-900 mb-3">Review Queue Status</h2>
-          <div className="space-y-2 text-sm">
-            {Object.entries(statusCounts).map(([status, count]) => (
-              <div key={status} className="flex items-center justify-between">
-                <span className="text-gray-600">{status}</span>
-                <span className="font-medium text-gray-900">{count}</span>
-              </div>
-            ))}
-          </div>
+          {totalQueue === 0 ? (
+            <p className="text-sm text-gray-400">No queue items yet.</p>
+          ) : (
+            <div className="space-y-2 text-sm">
+              {Object.entries(statusCounts).map(([status, count]) => (
+                <div key={status} className="flex items-center justify-between">
+                  <span className="text-gray-600">{status.replace(/_/g, ' ')}</span>
+                  <span className="font-medium text-gray-900">{count}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="bg-white rounded-2xl shadow p-5">
           <h2 className="text-sm font-semibold text-gray-900 mb-3">Video Render Jobs</h2>
-          <div className="space-y-2 text-sm">
-            <StatRow label="Completed" value={videoCompleted} />
-            <StatRow label="In progress" value={videoProcessing} />
-            <StatRow label="Failed" value={videoFailed} />
-            <StatRow label="Success rate" value={pct(videoCompleted, videoCompleted + videoFailed)} />
-          </div>
+          {videoJobs.length === 0 ? (
+            <p className="text-sm text-gray-400">No video render jobs yet.</p>
+          ) : (
+            <div className="space-y-2 text-sm">
+              <StatRow label="Completed" value={videoCompleted} />
+              <StatRow label="In progress" value={videoProcessing} />
+              <StatRow label="Failed" value={videoFailed} />
+              <StatRow
+                label="Success rate"
+                value={pct(videoCompleted, videoCompleted + videoFailed)}
+              />
+            </div>
+          )}
         </div>
       </div>
 
+      {/* ── Publish jobs ── */}
       <div className="bg-white rounded-2xl shadow p-5">
-        <h2 className="text-sm font-semibold text-gray-900 mb-3">Publish Jobs (manual publishing)</h2>
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-sm">
-          <StatBox label="Completed" value={publishCompleted} />
-          <StatBox label="In progress" value={publishInFlight} />
-          <StatBox label="Failed" value={publishFailed} />
-          <StatBox label="Success rate" value={pct(publishCompleted, publishCompleted + publishFailed)} />
-        </div>
+        <h2 className="text-sm font-semibold text-gray-900 mb-3">
+          Publish Jobs
+          <span className="ml-2 text-xs font-normal text-gray-400">(YouTube only, manual publishing)</span>
+        </h2>
+        {publishRes.error ? (
+          <p className="text-sm text-gray-400">
+            {(publishRes.error as { code?: string }).code === '42P01'
+              ? 'Run migration 005 to enable publish analytics.'
+              : `Error: ${publishRes.error.message}`}
+          </p>
+        ) : publishJobs.length === 0 ? (
+          <p className="text-sm text-gray-400">No publish jobs yet.</p>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+            <StatBox label="Completed" value={publishCompleted} />
+            <StatBox label="In progress" value={publishInFlight} />
+            <StatBox label="Failed" value={publishFailed} />
+            <StatBox label="Canceled" value={publishCanceled} />
+            <StatBox label="Success rate" value={pct(publishCompleted, publishAttempted)} />
+          </div>
+        )}
       </div>
 
+      {/* ── YouTube live stats ── */}
       <div className="bg-white rounded-2xl shadow p-5 space-y-4">
-        <h2 className="text-sm font-semibold text-gray-900">YouTube Performance (connected account)</h2>
+        <h2 className="text-sm font-semibold text-gray-900">
+          YouTube Performance
+          <span className="ml-2 text-xs font-normal text-gray-400">
+            (live stats from connected account)
+          </span>
+        </h2>
 
         {youtubeStatsWarning && (
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
@@ -185,51 +260,67 @@ export default async function AnalyticsPage() {
           </div>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-          <StatBox label="Views" value={totalViews} />
-          <StatBox label="Likes" value={totalLikes} />
-          <StatBox label="Comments" value={totalComments} />
-        </div>
-
         {youtubeStats.length > 0 && (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-gray-500 border-b border-gray-200">
-                  <th className="py-2 pr-3 font-medium">Video</th>
-                  <th className="py-2 pr-3 font-medium">Views</th>
-                  <th className="py-2 pr-3 font-medium">Likes</th>
-                  <th className="py-2 pr-3 font-medium">Comments</th>
-                </tr>
-              </thead>
-              <tbody>
-                {youtubeStats.slice(0, 10).map((video) => (
-                  <tr key={video.videoId} className="border-b border-gray-100">
-                    <td className="py-2 pr-3">
-                      <a
-                        href={`https://www.youtube.com/watch?v=${video.videoId}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-indigo-600 hover:underline"
-                      >
-                        {video.title}
-                      </a>
-                    </td>
-                    <td className="py-2 pr-3 text-gray-800">{video.viewCount}</td>
-                    <td className="py-2 pr-3 text-gray-800">{video.likeCount}</td>
-                    <td className="py-2 pr-3 text-gray-800">{video.commentCount}</td>
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+              <StatBox label="Total Views" value={totalViews.toLocaleString()} />
+              <StatBox label="Total Likes" value={totalLikes.toLocaleString()} />
+              <StatBox label="Total Comments" value={totalComments.toLocaleString()} />
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500 border-b border-gray-200">
+                    <th className="py-2 pr-3 font-medium">Video</th>
+                    <th className="py-2 pr-3 font-medium text-right">Views</th>
+                    <th className="py-2 pr-3 font-medium text-right">Likes</th>
+                    <th className="py-2 pr-3 font-medium text-right">Comments</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {youtubeStats.slice(0, 10).map((video) => (
+                    <tr key={video.videoId} className="border-b border-gray-100">
+                      <td className="py-2 pr-3">
+                        <a
+                          href={`https://www.youtube.com/watch?v=${video.videoId}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-indigo-600 hover:underline"
+                        >
+                          {video.title}
+                        </a>
+                      </td>
+                      <td className="py-2 pr-3 text-right text-gray-800">
+                        {video.viewCount.toLocaleString()}
+                      </td>
+                      <td className="py-2 pr-3 text-right text-gray-800">
+                        {video.likeCount.toLocaleString()}
+                      </td>
+                      <td className="py-2 pr-3 text-right text-gray-800">
+                        {video.commentCount.toLocaleString()}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </div>
     </div>
   )
 }
 
-function MetricCard({ label, value, subtitle }: { label: string; value: number; subtitle?: string }) {
+function MetricCard({
+  label,
+  value,
+  subtitle,
+}: {
+  label: string
+  value: number
+  subtitle?: string
+}) {
   return (
     <div className="bg-white rounded-2xl shadow p-4">
       <p className="text-xs uppercase tracking-wide text-gray-500">{label}</p>

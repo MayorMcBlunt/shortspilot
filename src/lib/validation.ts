@@ -11,6 +11,7 @@ import {
   MediaOutput,
   CaptionOutput,
 } from '@/types/agents'
+import { TEMPLATE_SEGMENT_COUNT } from '@/lib/ai/prompts/script'
 
 // ── Valid enum values as runtime arrays ───────────────────────────────────────
 
@@ -110,22 +111,59 @@ export function validateStrategyOutput(data: unknown): data is StrategyOutput {
 
 export function validateScriptOutput(data: unknown): data is ScriptOutput {
   const d = data as ScriptOutput
-  return (
-    typeof d?.hook === 'string' && d.hook.length > 0 &&
-    typeof d?.body === 'string' && d.body.length > 0 &&
-    typeof d?.cta === 'string' &&
-    typeof d?.fullScript === 'string' && d.fullScript.length > 0 &&
-    typeof d?.estimatedDurationSeconds === 'number'
-  )
+
+  // Structural checks
+  if (typeof d?.hook !== 'string' || d.hook.trim().length === 0) return false
+  // segments must be exactly TEMPLATE_SEGMENT_COUNT (currently 2).
+  // Too few = not enough scenes; too many = overflow silently dropped by Creatomate → black gaps.
+  if (!Array.isArray(d?.segments) || d.segments.length !== TEMPLATE_SEGMENT_COUNT) {
+    console.warn(
+      `[validateScriptOutput] Expected exactly ${TEMPLATE_SEGMENT_COUNT} segments, ` +
+      `got ${Array.isArray(d?.segments) ? d.segments.length : 'non-array'}`
+    )
+    return false
+  }
+  if (d.segments.some(s => typeof s !== 'string' || s.trim().length === 0)) return false
+  if (typeof d?.ending !== 'string' || d.ending.trim().length === 0) return false
+  if (typeof d?.fullScript !== 'string' || d.fullScript.trim().length === 0) return false
+  if (typeof d?.estimatedDurationSeconds !== 'number') return false
+
+  // Word count check — re-derive from structured fields.
+  // estimatedDurationSeconds is now the midpoint of the target range, not a hard cap.
+  // We use a generous 60% lower bound to reject obviously undersized scripts while
+  // allowing natural variation (a 20–30s series whose script hits 19s is fine).
+  const TTS_WORDS_PER_SECOND = 2.8
+  const assembled = [d.hook, ...d.segments, d.ending].join(' ')
+  const wordCount = assembled.trim().split(/\s+/).length
+  const minExpectedWords = Math.round(d.estimatedDurationSeconds * TTS_WORDS_PER_SECOND * 0.6)
+  if (wordCount < minExpectedWords) {
+    console.warn(
+      `[validateScriptOutput] Script too short: ${wordCount} assembled words for a ` +
+      `${d.estimatedDurationSeconds}s target (expected >=${minExpectedWords}).`
+    )
+    return false
+  }
+
+  return true
 }
 
 export function validateMediaOutput(data: unknown): data is MediaOutput {
   const d = data as MediaOutput
-  return (
-    Array.isArray(d?.scenes) && d.scenes.length > 0 &&
-    typeof d?.overallStyle === 'string' &&
-    typeof d?.thumbnailConcept === 'string'
-  )
+  if (!Array.isArray(d?.scenes) || d.scenes.length === 0) return false
+  if (typeof d?.overallStyle !== 'string') return false
+  if (typeof d?.thumbnailConcept !== 'string') return false
+
+  // Scene count must match the template's slot count exactly.
+  // Extra scenes overflow silently; missing scenes leave black slots.
+  const TEMPLATE_TOTAL_SCENES = TEMPLATE_SEGMENT_COUNT + 2 // segments + hook + ending
+  if (d.scenes.length !== TEMPLATE_TOTAL_SCENES) {
+    console.warn(
+      `[validateMediaOutput] Expected exactly ${TEMPLATE_TOTAL_SCENES} scenes, got ${d.scenes.length}`
+    )
+    return false
+  }
+
+  return true
 }
 
 export function validateCaptionOutput(data: unknown): data is CaptionOutput {

@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
@@ -10,9 +10,9 @@ import Input from '@/components/ui/Input'
 import Textarea from '@/components/ui/Textarea'
 import StatusBadge from '@/components/ui/StatusBadge'
 
-// ── Merge helper ──────────────────────────────────────────────────────────────
+// â”€â”€ Merge helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Merges the immutable package with any human overrides in review_edits.
-// The original package is never modified — this is display-only merging.
+// The original package is never modified - this is display-only merging.
 function mergeWithEdits(item: ContentQueueItemFull): ReviewEdits & {
   title: string
   hook: string
@@ -33,70 +33,112 @@ function mergeWithEdits(item: ContentQueueItemFull): ReviewEdits & {
   }
 }
 
+// Reconstruct fullScript from structured fields whenever segments are edited.
+function assembleFullScript(hook: string, segments: string[], ending: string): string {
+  return [hook, ...segments, ending]
+    .map(s => s.trim())
+    .filter(Boolean)
+    .join(' ')
+}
+
 export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
   const router = useRouter()
   const merged = mergeWithEdits(item)
 
-  // Local edit state — starts from merged (package + any existing edits)
+  // Local edit state - starts from merged (package + any existing edits)
   const [title, setTitle]               = useState(merged.title)
   const [hook, setHook]                 = useState(merged.hook)
-  const [fullScript, setFullScript]     = useState(merged.fullScript)
+  // Segments: use structured fields when available, fall back to fullScript split
+  const [segments, setSegments]         = useState<string[]>(
+    item.package.script.segments ?? [merged.fullScript]
+  )
+  const [ending, setEnding]             = useState(
+    item.package.script.ending ?? ''
+  )
+  // fullScript is always derived - never edited directly in the UI
+  const fullScript = assembleFullScript(hook, segments, ending)
   const [primaryCaption, setPrimaryCaption] = useState(merged.primaryCaption)
   const [hashtagsRaw, setHashtagsRaw]   = useState(merged.hashtags.join(', '))
   const [reviewNotes, setReviewNotes]   = useState(merged.reviewNotes)
   const [rejectReason, setRejectReason] = useState('')
 
-  const [saving, setSaving]       = useState(false)
-  const [acting, setActing]       = useState(false)
-  const [rendering, setRendering] = useState(false)
-  const [deleting, setDeleting]   = useState(false)
-  const [toast, setToast]         = useState<{ msg: string; ok: boolean } | null>(null)
-  const [showReject, setShowReject] = useState(false)
+  const [saving, setSaving]           = useState(false)
+  const [acting, setActing]           = useState(false)
+  const [rendering, setRendering]     = useState(false)
+  const [deleting, setDeleting]       = useState(false)
+  const [refreshing, setRefreshing]   = useState(false)
+  const [liveStatus, setLiveStatus]   = useState(item.status)
+  const [liveVideoUrl, setLiveVideoUrl] = useState(item.video_url)
+  const [toast, setToast]             = useState<{ msg: string; ok: boolean } | null>(null)
+  const [showReject, setShowReject]   = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
 
-  // ── Fix hydration: date formatted client-side only ────────────────────────
+  // -- Fix hydration: date formatted client-side only
   const [generatedAtDisplay, setGeneratedAtDisplay] = useState('')
   useEffect(() => {
     setGeneratedAtDisplay(new Date(item.package.generatedAt).toLocaleString())
   }, [item.package.generatedAt])
 
-  // ── Auto-poll while video is rendering ────────────────────────────────────
-  // Polls /api/queue/[id]/status every 5s and refreshes when video_ready.
+  // Keep local live state aligned when server props change after refresh.
+  useEffect(() => {
+    setLiveStatus(item.status)
+    setLiveVideoUrl(item.video_url)
+  }, [item.status, item.video_url])
+
+  // -- Auto-poll while video is rendering
+  // Polls /api/queue/[id]/status every 2s and refreshes when video becomes ready.
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   useEffect(() => {
-    if (item.status !== 'video_rendering') {
+    if (liveStatus !== 'video_rendering') {
       if (pollRef.current) clearInterval(pollRef.current)
       return
     }
+
     pollRef.current = setInterval(async () => {
       try {
-        const res = await fetch(`/api/queue/${item.id}/status`)
+        const res = await fetch(`/api/queue/${item.id}/status?t=${Date.now()}`, { cache: 'no-store' })
         if (!res.ok) return
-        const { status } = await res.json()
+
+        const { status, video_url } = await res.json()
+
+        if (typeof status === 'string') {
+          setLiveStatus(status as typeof item.status)
+        }
+        if (typeof video_url === 'string' || video_url === null) {
+          setLiveVideoUrl(video_url)
+        }
+
         if (status !== 'video_rendering') {
-          clearInterval(pollRef.current!)
+          if (pollRef.current) clearInterval(pollRef.current)
           pollRef.current = null
+          setRefreshing(true)
           router.refresh()
+
+          // Fallback: clear overlay even if refresh is delayed.
+          setTimeout(() => setRefreshing(false), 2500)
         }
       } catch {
-        // network hiccup — keep polling
+        // network hiccup - keep polling
       }
-    }, 5000)
+    }, 2000)
+
     return () => {
       if (pollRef.current) clearInterval(pollRef.current)
     }
-  }, [item.status, item.id, router])
+  }, [liveStatus, item.id, router])
 
-  const isTerminal = item.status === 'rejected' || item.status === 'published'
-  const isRendering = item.status === 'video_rendering'
-  const hasVideo = Boolean(item.video_url)
+  const effectiveStatus = liveStatus
+  const effectiveVideoUrl = liveVideoUrl ?? item.video_url
+  const isTerminal = effectiveStatus === 'rejected' || effectiveStatus === 'published'
+  const isRendering = effectiveStatus === 'video_rendering'
+  const hasVideo = Boolean(effectiveVideoUrl)
 
   function showToast(msg: string, ok = true) {
     setToast({ msg, ok })
     setTimeout(() => setToast(null), 4000)
   }
 
-  // ── API call helper ───────────────────────────────────────────────────────
+  // â”€â”€ API call helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function callAction(body: object) {
     const res = await fetch(`/api/queue/${item.id}`, {
       method: 'PATCH',
@@ -108,14 +150,15 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
     return json
   }
 
-  // ── Save edits ────────────────────────────────────────────────────────────
+  // â”€â”€ Save edits â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function handleSaveEdits() {
     setSaving(true)
     try {
       const edits: ReviewEdits = {}
       if (title !== item.package.caption.title)               edits.title = title
       if (hook !== item.package.script.hook)                  edits.hook = hook
-      if (fullScript !== item.package.script.fullScript)      edits.fullScript = fullScript
+      // fullScript is derived from hook+segments+ending - save it if any part changed
+      if (fullScript !== item.package.script.fullScript) edits.fullScript = fullScript
       if (primaryCaption !== item.package.caption.primaryCaption) edits.primaryCaption = primaryCaption
       const hashtags = hashtagsRaw.split(',').map(h => h.trim()).filter(Boolean)
       if (JSON.stringify(hashtags) !== JSON.stringify(item.package.caption.hashtags)) edits.hashtags = hashtags
@@ -134,16 +177,16 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
     }
   }
 
-  // ── Status actions ────────────────────────────────────────────────────────
+  // â”€â”€ Status actions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function handleAction(action: string, extra?: object) {
     setActing(true)
     try {
       await callAction({ action, ...extra })
       showToast(
-        action === 'approve'               ? 'Approved ✓' :
+        action === 'approve'               ? 'Approved' :
         action === 'reject'                ? 'Rejected' :
         action === 'request_edits'         ? 'Marked: Needs Edits' :
-        action === 'mark_ready_to_publish' ? 'Ready to Publish ✓' :
+        action === 'mark_ready_to_publish' ? 'Ready to Publish' :
         'Done'
       )
       router.refresh()
@@ -156,13 +199,13 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
     }
   }
 
-  // ── Generate video ────────────────────────────────────────────────────────
+  // â”€â”€ Generate video â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function handleGenerateVideo() {
     setRendering(true)
     try {
       const res = await callAction({ action: 'request_video_render' })
       const isStub = res.message?.includes('Stub')
-      showToast(isStub ? 'Video generated! ✓' : 'Video render started — check back shortly')
+      showToast(isStub ? 'Video generated!' : 'Video render started - check back shortly')
       router.refresh()
       if (isStub) router.push('/content')
     } catch (e) {
@@ -172,7 +215,7 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
     }
   }
 
-  // ── Delete this item ────────────────────────────────────────────────
+  // â”€â”€ Delete this item â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function handleDelete() {
     setDeleting(true)
     try {
@@ -191,7 +234,7 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
     }
   }
 
-  // ── Reset stuck rendering back to approved ────────────────────────
+  // â”€â”€ Reset stuck rendering back to approved â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function handleResetToApproved() {
     try {
       const res = await fetch(`/api/queue/${item.id}/reset-render`, { method: 'POST' })
@@ -218,13 +261,13 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
               onClick={() => router.push('/content')}
               className="text-sm text-gray-400 hover:text-gray-600 transition"
             >
-              ← Queue
+              Back to Queue
             </button>
             <span className="text-gray-300">/</span>
             <span className="text-sm text-gray-500 truncate max-w-xs">{title}</span>
           </div>
           <div className="flex items-center gap-2">
-            <StatusBadge status={item.status} />
+            <StatusBadge status={effectiveStatus} />
             <span className="text-xs text-gray-400 uppercase">{p.platform}</span>
             <span className="text-xs text-gray-400">
               {generatedAtDisplay ? `Generated ${generatedAtDisplay}` : ''}
@@ -232,7 +275,7 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
           </div>
         </div>
 
-        {/* Delete button — always available */}
+        {/* Delete button â€” always available */}
         {!showDeleteConfirm ? (
           <button
             onClick={() => setShowDeleteConfirm(true)}
@@ -265,8 +308,8 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
         {/* Action buttons */}
         {!isTerminal && !isRendering && (
           <div className="flex gap-2 flex-wrap justify-end">
-            {/* Text editing actions — available until video_rendering */}
-            {(item.status === 'pending_review' || item.status === 'needs_edits') && (
+            {/* Text editing actions â€” available until video_rendering */}
+            {(effectiveStatus === 'pending_review' || effectiveStatus === 'needs_edits') && (
               <>
                 <Button variant="secondary" loading={saving} onClick={handleSaveEdits}>
                   Save Edits
@@ -287,8 +330,8 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
               </>
             )}
 
-            {/* Approved: Generate Video or skip straight to Ready */}
-            {item.status === 'approved' && (
+                  Skip to Ready
+            {effectiveStatus === 'approved' && (
               <>
                 <Button variant="secondary" loading={saving} onClick={handleSaveEdits}>
                   Save Edits
@@ -299,7 +342,7 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
                   className="bg-purple-600 hover:bg-purple-700"
                   onClick={handleGenerateVideo}
                 >
-                  🎬 Generate Video
+                  Generate Video
                 </Button>
                 <Button
                   variant="primary"
@@ -307,7 +350,7 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
                   className="bg-indigo-800 hover:bg-indigo-900"
                   onClick={() => handleAction('mark_ready_to_publish')}
                 >
-                  Skip → Ready
+                  Skip to Ready
                 </Button>
                 <Button variant="danger" loading={acting} onClick={() => setShowReject(true)}>
                   Reject
@@ -315,8 +358,8 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
               </>
             )}
 
-            {/* Video ready: review video then mark ready to publish */}
-            {item.status === 'video_ready' && (
+                  Mark Ready to Publish
+            {effectiveStatus === 'video_ready' && (
               <>
                 <Button
                   variant="primary"
@@ -324,11 +367,12 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
                   className="bg-indigo-800 hover:bg-indigo-900"
                   onClick={() => handleAction('mark_ready_to_publish')}
                 >
-                  ✓ Mark Ready to Publish
+                  Mark Ready to Publish
                 </Button>
                 <Button
                   variant="secondary"
                   loading={rendering}
+                  title="Re-render will replace the current video"
                   onClick={handleGenerateVideo}
                 >
                   Re-render Video
@@ -340,7 +384,7 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
             )}
 
             {/* ready_to_publish: final confirmation */}
-            {item.status === 'ready_to_publish' && (
+            {effectiveStatus === 'ready_to_publish' && (
               <Button variant="danger" loading={acting} onClick={() => setShowReject(true)}>
                 Reject
               </Button>
@@ -399,9 +443,22 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
       {isTerminal && (
         <Card className="bg-gray-50 border border-gray-200">
           <p className="text-sm text-gray-500">
-            This item is <strong>{item.status}</strong> and cannot be edited.
+            This item is <strong>{effectiveStatus}</strong> and cannot be edited.
           </p>
         </Card>
+      )}
+
+      {/* Refreshing overlay â€” shown when poll detects video is ready */}
+      {refreshing && (
+        <div className="fixed inset-0 bg-white/60 flex items-center justify-center z-50 pointer-events-none">
+          <div className="flex items-center gap-3 bg-white shadow-lg rounded-xl px-5 py-3">
+            <svg className="animate-spin h-5 w-5 text-purple-600" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+            </svg>
+            <span className="text-sm font-medium text-gray-700">Video ready - loading...</span>
+          </div>
+        </div>
       )}
 
       {/* Rendering in progress notice */}
@@ -431,15 +488,15 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
         </Card>
       )}
 
-      {/* ── Video player (shown when video_url is available) ── */}
-      {hasVideo && item.video_url && (
+      {/* â”€â”€ Video player (shown when video_url is available) â”€â”€ */}
+      {hasVideo && effectiveVideoUrl && (
         <Card className="bg-gray-900 border-0">
           <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
             Generated Video Preview
           </h3>
           <div className="flex justify-center">
             <video
-              src={item.video_url}
+              src={effectiveVideoUrl}
               controls
               playsInline
               className="rounded-xl max-h-[500px] w-auto"
@@ -454,7 +511,7 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
         </Card>
       )}
 
-      {/* ── Editable fields ── */}
+      {/* â”€â”€ Editable fields â”€â”€ */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
 
         {/* Title */}
@@ -489,25 +546,98 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
           )}
         </Card>
 
-        {/* Script */}
+        {/* Script â€” structured segment cards */}
         <Card className="lg:col-span-2">
-          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
-            Full Script
-            {hasVideo && (
-              <span className="ml-2 text-xs text-amber-500 font-normal normal-case">
-                ⚠ Editing script after video render requires a re-render
-              </span>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+              Script
+              {hasVideo && (
+                <span className="ml-2 text-xs text-amber-500 font-normal normal-case">
+                  Warning: Editing after video render requires a re-render
+                </span>
+              )}
+            </h3>
+            <span className="text-xs text-gray-400">
+              {fullScript.trim().split(/\s+/).length} words
+            </span>
+          </div>
+
+          <div className="space-y-2">
+            {/* Hook */}
+            <div className="flex items-start gap-2">
+              <span className="shrink-0 mt-2 text-xs font-semibold text-indigo-500 uppercase w-14 text-right">Hook</span>
+              <Input
+                value={hook}
+                onChange={e => setHook(e.target.value)}
+                disabled={isTerminal}
+                placeholder="Opening hook..."
+                className="flex-1"
+              />
+            </div>
+
+            {/* Segments */}
+            {segments.map((seg, i) => (
+              <div key={i} className="flex items-start gap-2">
+                <span className="shrink-0 mt-2 text-xs font-semibold text-gray-400 w-14 text-right">
+                  Fact {i + 1}
+                </span>
+                <div className="flex-1 flex gap-1">
+                  <Input
+                    value={seg}
+                    onChange={e => {
+                      const updated = [...segments]
+                      updated[i] = e.target.value
+                      setSegments(updated)
+                    }}
+                    disabled={isTerminal}
+                    placeholder={`Segment ${i + 1}...`}
+                    className="flex-1"
+                  />
+                  {!isTerminal && segments.length > 2 && (
+                    <button
+                      onClick={() => setSegments(segments.filter((_, idx) => idx !== i))}
+                      className="shrink-0 px-2 text-gray-300 hover:text-red-400 transition text-sm"
+                      title="Remove segment"
+                    >x</button>
+                  )}
+                </div>
+              </div>
+            ))}
+
+            {/* Add segment */}
+            {!isTerminal && segments.length < 5 && (
+              <div className="flex items-start gap-2">
+                <span className="w-14" />
+                <button
+                  onClick={() => setSegments([...segments, ''])}
+                  className="text-xs text-indigo-400 hover:text-indigo-600 transition py-1"
+                >
+                  + Add segment
+                </button>
+              </div>
             )}
-          </h3>
-          <Textarea
-            value={fullScript}
-            onChange={e => setFullScript(e.target.value)}
-            disabled={isTerminal}
-            className="min-h-[140px]"
-            placeholder="Full script..."
-          />
+
+            {/* Ending */}
+            <div className="flex items-start gap-2">
+              <span className="shrink-0 mt-2 text-xs font-semibold text-indigo-500 uppercase w-14 text-right">Ending</span>
+              <Input
+                value={ending}
+                onChange={e => setEnding(e.target.value)}
+                disabled={isTerminal}
+                placeholder="Call to action or punchline..."
+                className="flex-1"
+              />
+            </div>
+          </div>
+
+          {/* Assembled preview */}
+          <div className="mt-3 bg-gray-50 rounded-lg px-3 py-2">
+            <p className="text-xs text-gray-400 font-medium mb-1">Assembled script (sent to TTS):</p>
+            <p className="text-xs text-gray-600 leading-relaxed">{fullScript || <em className="text-gray-300">empty</em>}</p>
+          </div>
+
           {fullScript !== p.script.fullScript && (
-            <p className="text-xs text-indigo-500 mt-1">Edited from original</p>
+            <p className="text-xs text-indigo-500 mt-2">Edited from original</p>
           )}
         </Card>
 
@@ -549,7 +679,7 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
             onChange={e => setHashtagsRaw(e.target.value)}
             disabled={isTerminal}
             className="min-h-[80px]"
-            hint="Comma-separated — e.g. #shorts, #productivity"
+            hint="Comma-separated - e.g. #shorts, #productivity"
             placeholder="#shorts, #productivity..."
           />
           <div className="flex flex-wrap gap-1 mt-2">
@@ -569,12 +699,12 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
             onChange={e => setReviewNotes(e.target.value)}
             disabled={isTerminal}
             placeholder="Internal notes for this item..."
-            hint="Not published — for your reference only"
+            hint="Not published - for your reference only"
           />
         </Card>
       </div>
 
-      {/* ── Read-only: Original AI outputs ── */}
+      {/* â”€â”€ Read-only: Original AI outputs â”€â”€ */}
       <div className="space-y-4">
         <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide">
           Original AI Output (read-only)
@@ -600,7 +730,7 @@ export default function ReviewEditor({ item }: { item: ContentQueueItemFull }) {
         {/* Media plan */}
         <Card>
           <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-3">
-            Media Plan — {p.media.scenes.length} scenes
+            Media Plan - {p.media.scenes.length} scenes
           </h3>
           <div className="space-y-3">
             {p.media.scenes.map(scene => (
@@ -648,3 +778,9 @@ function Row({ label, value }: { label: string; value: string }) {
     </div>
   )
 }
+
+
+
+
+
+
