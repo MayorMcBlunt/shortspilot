@@ -18,6 +18,8 @@ export const VALID_REVIEW_STATUSES: ReviewStatus[] = [
   'pending_review',
   'needs_edits',
   'approved',
+  'video_rendering',
+  'video_ready',
   'ready_to_publish',
   'rejected',
   'published',
@@ -33,6 +35,7 @@ export type ReviewAction =
   | 'update_notes'
   | 'save_edits'
   | 'mark_ready_to_publish'
+  | 'request_video_render'   // kick off TTS + video assembly
 
 export const VALID_REVIEW_ACTIONS: ReviewAction[] = [
   'approve',
@@ -41,6 +44,15 @@ export const VALID_REVIEW_ACTIONS: ReviewAction[] = [
   'update_notes',
   'save_edits',
   'mark_ready_to_publish',
+  'request_video_render',
+]
+
+// Statuses that block a new video render (render already in flight or done)
+export const VIDEO_RENDER_BLOCKING_STATUSES: ReviewStatus[] = [
+  'video_rendering',
+  'video_ready',
+  'ready_to_publish',
+  'published',
 ]
 
 // ── Type guards ───────────────────────────────────────────────────────────────
@@ -57,6 +69,13 @@ export function isValidReviewAction(value: unknown): value is ReviewAction {
   return typeof value === 'string' && VALID_REVIEW_ACTIONS.includes(value as ReviewAction)
 }
 
+export const VALID_VIDEO_JOB_STATUSES = ['queued', 'processing', 'completed', 'failed'] as const
+export type VideoJobStatusValue = typeof VALID_VIDEO_JOB_STATUSES[number]
+
+export function isValidVideoJobStatus(value: unknown): value is VideoJobStatusValue {
+  return typeof value === 'string' && (VALID_VIDEO_JOB_STATUSES as readonly string[]).includes(value)
+}
+
 export function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
 }
@@ -71,8 +90,7 @@ export function validateReviewEdits(data: unknown): data is ReviewEdits {
   if ('hook' in d && typeof d.hook !== 'string') return false
   if ('fullScript' in d && typeof d.fullScript !== 'string') return false
   if ('primaryCaption' in d && typeof d.primaryCaption !== 'string') return false
-  if ('hashtags' in d && !Array.isArray(d.hashtags)) return false
-  if ('reviewNotes' in d && typeof d.reviewNotes !== 'string') return false
+  if ('hashtags' in d && (!Array.isArray(d.hashtags) || !d.hashtags.every(h => typeof h === 'string'))) return false
   return true
 }
 
@@ -119,3 +137,5 @@ export function validateCaptionOutput(data: unknown): data is CaptionOutput {
     Array.isArray(d?.ctaVariations)
   )
 }
+
+

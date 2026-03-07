@@ -18,6 +18,7 @@ export type ContentQueueRow = {
   hook: string
   review_notes: string | null
   review_edits: ReviewEdits | null   // human overrides — never touches package
+  video_url: string | null           // rendered MP4 URL — set after video_ready
   approved_at: string | null
   rejected_at: string | null
   rejection_reason: string | null

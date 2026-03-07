@@ -1,17 +1,3 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// Content Generation Orchestrator
-//
-// This is the ONLY entry point for running the agent pipeline.
-// It runs agents in sequence, passing each output into the next agent.
-// If any agent fails, the entire job fails and nothing is saved.
-// The final output is a ContentPackage saved to the content_queue table
-// with status 'pending_review' — no content is ever auto-published.
-//
-// Flow:
-//   strategyAgent → scriptAgent → mediaAgent (parallel with captionAgent)
-//     → packagingAgent → save to content_queue
-// ─────────────────────────────────────────────────────────────────────────────
-
 import { createClient } from '@/lib/supabase/server'
 import { strategyAgent } from '@/lib/ai/agents/strategyAgent'
 import { scriptAgent } from '@/lib/ai/agents/scriptAgent'
@@ -32,7 +18,6 @@ export async function runContentPipeline(
   platform: Platform,
   userId: string
 ): Promise<OrchestrationResult> {
-
   const jobId = uuidv4()
 
   const context: AgentContext = {
@@ -42,29 +27,26 @@ export async function runContentPipeline(
     jobId,
   }
 
-  // ── Step 1: Strategy ───────────────────────────────────────────────────────
   const strategyResult = await strategyAgent({ context })
   if (!strategyResult.success) {
     return { success: false, error: strategyResult.error, failedAgent: 'strategy' }
   }
 
-  // ── Step 2: Script (depends on strategy) ──────────────────────────────────
   const scriptResult = await scriptAgent({ context, strategy: strategyResult.data })
   if (!scriptResult.success) {
     return { success: false, error: scriptResult.error, failedAgent: 'script' }
   }
 
-  // ── Step 3: Media + Caption run in parallel (both depend on script) ────────
   const [mediaResult, captionResult] = await Promise.all([
     mediaAgent({ context, strategy: strategyResult.data, script: scriptResult.data }),
     captionAgent({ context, strategy: strategyResult.data, script: scriptResult.data }),
   ])
 
-  // Surface all parallel failures, not just the first one
-  const parallelErrors: string[] = []
-  if (!mediaResult.success) parallelErrors.push(`media: ${mediaResult.error}`)
-  if (!captionResult.success) parallelErrors.push(`caption: ${captionResult.error}`)
-  if (parallelErrors.length > 0) {
+  if (!mediaResult.success || !captionResult.success) {
+    const parallelErrors: string[] = []
+    if (!mediaResult.success) parallelErrors.push(`media: ${mediaResult.error}`)
+    if (!captionResult.success) parallelErrors.push(`caption: ${captionResult.error}`)
+
     return {
       success: false,
       error: parallelErrors.join(' | '),
@@ -72,22 +54,17 @@ export async function runContentPipeline(
     }
   }
 
-  // ── Step 4: Packaging ──────────────────────────────────────────────────────
   const packageResult = await packagingAgent({
     context,
     strategy: strategyResult.data,
     script: scriptResult.data,
-    media: mediaResult.data!,
-    caption: captionResult.data!,
+    media: mediaResult.data,
+    caption: captionResult.data,
   })
   if (!packageResult.success) {
     return { success: false, error: packageResult.error, failedAgent: 'packaging' }
   }
 
-  // ── Step 5: Save to review queue ───────────────────────────────────────────
-  // Status is always 'pending_review' — never auto-published.
-  // The package JSONB is the immutable generated content.
-  // Review state lives only in the DB row columns.
   const supabase = await createClient()
   const { data, error } = await supabase
     .from('content_queue')

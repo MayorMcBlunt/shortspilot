@@ -3,6 +3,8 @@ import { redirect } from 'next/navigation'
 import { getQueueItems } from '@/lib/jobs/reviewQueue'
 import QueueList from '@/components/content/QueueList'
 
+export const dynamic = 'force-dynamic'  // always fetch fresh data, never serve stale cache
+
 export default async function ContentPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()

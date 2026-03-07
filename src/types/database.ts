@@ -3,6 +3,7 @@
 
 import { ContentPackage, ReviewEdits } from '@/types/agents'
 import { Platform, ReviewStatus } from '@/types/content'
+import { VideoJobStatus } from '@/types/video'
 
 export type Database = {
   public: {
@@ -50,6 +51,7 @@ export type Database = {
           package: ContentPackage         // immutable JSONB — never updated
           review_edits: ReviewEdits | null // human overrides — separate JSONB
           review_notes: string | null
+          video_url: string | null
           approved_at: string | null
           rejected_at: string | null
           rejection_reason: string | null
@@ -68,6 +70,7 @@ export type Database = {
           package: ContentPackage
           review_edits?: ReviewEdits | null
           review_notes?: string | null
+          video_url?: string | null
           approved_at?: string | null
           rejected_at?: string | null
           rejection_reason?: string | null
@@ -78,10 +81,51 @@ export type Database = {
           status?: ReviewStatus
           review_edits?: ReviewEdits | null
           review_notes?: string | null
+          video_url?: string | null
           approved_at?: string | null
           rejected_at?: string | null
           rejection_reason?: string | null
           // NOTE: `package` is intentionally absent — it must never be updated
+        }
+      }
+
+      video_jobs: {
+        Row: {
+          id: string
+          queue_item_id: string
+          user_id: string
+          status: VideoJobStatus
+          provider: string
+          external_job_id: string | null
+          audio_url: string | null
+          video_url: string | null
+          error_message: string | null
+          render_metadata: Record<string, unknown> | null
+          created_at: string
+          completed_at: string | null
+        }
+        Insert: {
+          id?: string
+          queue_item_id: string
+          user_id: string
+          status?: VideoJobStatus
+          provider?: string
+          external_job_id?: string | null
+          audio_url?: string | null
+          video_url?: string | null
+          error_message?: string | null
+          render_metadata?: Record<string, unknown> | null
+          created_at?: string
+          completed_at?: string | null
+        }
+        Update: {
+          status?: VideoJobStatus
+          external_job_id?: string | null
+          audio_url?: string | null
+          video_url?: string | null
+          error_message?: string | null
+          render_metadata?: Record<string, unknown> | null
+          completed_at?: string | null
         }
       }
 

@@ -1,3 +1,5 @@
+create extension if not exists "uuid-ossp";
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- ShortsPilot — Content Queue Migration
 -- Run this in: Supabase Dashboard → SQL Editor
@@ -82,3 +84,4 @@ create policy "Users can insert their own queue events"
   with check (auth.uid() = user_id);
 
 -- Events are append-only — no update or delete policies
+

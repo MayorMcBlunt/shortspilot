@@ -110,15 +110,16 @@ export type ReviewEdits = {
   fullScript?: string
   primaryCaption?: string
   hashtags?: string[]
-  reviewNotes?: string
 }
 
 // ── Review Status ─────────────────────────────────────────────────────────────
 export type ReviewStatus =
   | 'pending_review'    // just generated, awaiting human eyes
   | 'needs_edits'       // flagged for editing before approval
-  | 'approved'          // human approved
-  | 'ready_to_publish'  // approved + explicitly queued for manual publishing
+  | 'approved'          // human approved text — ready to trigger video render
+  | 'video_rendering'   // TTS + video assembly job dispatched
+  | 'video_ready'       // MP4 exists, awaiting human preview
+  | 'ready_to_publish'  // human previewed video + confirmed ready
   | 'rejected'          // human rejected
   | 'published'         // manually published from the UI
 
@@ -126,3 +127,4 @@ export type ReviewStatus =
 export type AgentResult<T> =
   | { success: true; data: T }
   | { success: false; error: string }
+
